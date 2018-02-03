@@ -1,18 +1,36 @@
+// User settable values
+#define encoder0PinA  0
+#define encoder0PinB  2
+#define encoder0PinP  15
+#define displayPinSDA 4
+#define displayPinSCL 5
+// The PUMP_PINS array defines pins to check, and also defines the number of pumps to keep track of.
+// Number of pumps is limited by the number of pins available on controller AND BY MEMORY.
+// Each additional pump needs an array of a full day to track it. Each uses 10.8 kbytes of ram.
+// Most ESPs only have enough for 3-4 pumps
+const int PUMP_PINS[] = {14, 16};
+const int PUMP_CHECK_INTERVAL = 1000; // In ms
+const int DATA_PUSH_INTERVAL = 500; // In seconds
+const int DISPLAY_INTERVAL = 100; //In ms
+
+// Stuff for Pump Calculations
 #include <TaskScheduler.h>
 #include <TaskSchedulerDeclarations.h>
-
 #include <math.h>
 #include <StandardCplusplus.h>
 #include <bitset>
+// Stuff for display
+#include "SSD1306.h" // alias for `#include "SSD1306Wire.h"`
+#include "OLEDDisplayUi.h"
+#//include "images.h" //TODO: Use this when you draw your boat
 
 
-
-const int PUMP_PINS[] = {1, 2}; //This array defines pins to check, and also defines the number of pumps to keep track of.
-// Number of pumps is limited by the number of pins available on controller AND BY MEMORY. Each additional pump needs an array of a full day to track it. each uses 10.8 kbytes of ram.
-const int PUMP_CHECK_INTERVAL = 1000;
-const int DATA_PUSH_INTERVAL = 500; // In seconds
-const int DISPLAY_INTERVAL = 1000; //In ms
-
+// Initialize the OLED display
+SSD1306  display(0x3c, displayPinSDA, displayPinSCL);
+//Add a UI using above display
+OLEDDisplayUi ui     ( &display );
+// Volatile variable for tracking the encoder's position
+volatile unsigned int encoder0Pos = 0;
 
 const int NUM_PUMPS = (sizeof(PUMP_PINS) / sizeof(PUMP_PINS[0])); //C++ lame way of finding the size of an array
 const int SECONDS_IN_MINUTE = 60;
@@ -22,6 +40,7 @@ const int DAYS_IN_WEEK = 7;
 const int DAYS_IN_MONTH = 30;
 
 const int SECONDS_IN_DAY = (SECONDS_IN_MINUTE * MINUTES_IN_HOUR * HOURS_IN_DAY);
+
 
 std::bitset<SECONDS_IN_DAY> pump_arrays[NUM_PUMPS];
 int seconds_on_by_day[30][NUM_PUMPS] = {0};
@@ -45,9 +64,41 @@ Scheduler low_power_runner;
 
 bool HIGH_POWER = true;
 
+void alarmOverlay(OLEDDisplay *display, OLEDDisplayUiState* state) {
+  display->setTextAlignment(TEXT_ALIGN_RIGHT);
+  display->setFont(ArialMT_Plain_10);
+  display->drawString(128, 0, String(millis()));
+}
+
+
+void pumpFrame(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  display->setFont(ArialMT_Plain_16);
+
+  // The coordinates define the center of the text
+  display->setTextAlignment(TEXT_ALIGN_CENTER);
+
+  display->drawString(64 - x, 18, String(get_last_24_hours(0)));
+  display->drawString(64 - x, 36, String(encoder0Pos));
+}
+
+void imageFrame(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  // Text alignment demo
+  display->setFont(ArialMT_Plain_10);
+  display->setTextAlignment(TEXT_ALIGN_CENTER);
+  display->drawString(64 - x, 32, String(encoder0Pos)); // The coordinates define the center of the text
+}
+
+FrameCallback frames[] = { pumpFrame, pumpFrame, pumpFrame, pumpFrame, pumpFrame, pumpFrame, imageFrame };
+int frameCount = 7;
+
+OverlayCallback overlays[] = { alarmOverlay };
+int overlaysCount = 1;
+
+
+
 bool check_physical_pump(int pump_number) {
-  //return true;
-  return (int)random(2); //TODO: check actual pin
+  return digitalRead(PUMP_PINS[pump_number]);
+  //return (int)random(2); //TODO: check actual pin
 }
 
 int get_last_n_days(int n, int pump_number) { // This whole bit I THINK is right... stupid arrays
@@ -74,47 +125,12 @@ int get_last_24_hours(int pump_number) {
 
 // - CALLBACKS FOR SCHEDULED TASKS
 void update_displays() {
-  lcd_dot = not(lcd_dot);
-  for (int i = 0; i < NUM_PUMPS; i++) {
-    Serial.print("Pump");
-    Serial.print(i);
-    Serial.print(" has been running for ");
-    Serial.print(get_last_24_hours(i));
-    Serial.print(" seconds in the last 24 hours");
-    Serial.println();
-    Serial.print("Pump");
-    Serial.print(i);
-    Serial.print(" has been running for ");
-    Serial.print(get_last_n_days(7, i));
-    Serial.print(" seconds in the last 7 days");
-    Serial.println();
-    Serial.print("Pump");
-    Serial.print(i);
-    Serial.print(" has been running for ");
-    Serial.print(get_last_n_days(30, i));
-    Serial.print(" seconds in the last 30 days");
-    Serial.println();
-
+  int desired_frame = encoder0Pos % 7; //TODO: Set this 7 to the number of frames you lazy cunt
+  OLEDDisplayUiState * current_state = ui.getUiState();
+  if (current_state->currentFrame != desired_frame && current_state->frameState == FIXED) {
+    ui.transitionToFrame(desired_frame);
   }
-  Serial.print("Seconds since last day shift: ");
-  Serial.println(seconds_since_day_shift);
-  Serial.print("Current Day: ");
-  Serial.println(current_day);
-  Serial.print("number_of_days_for_average: ");
-  Serial.println(number_of_days_for_average);
 
-  Serial.print("Array seconds_on_by_day [");
-  for (int i = 0; i < 30; i++) {
-    Serial.print("[");
-    for (int j = 0; j < NUM_PUMPS; j++) {
-      Serial.print(seconds_on_by_day[i][j]);
-      Serial.print(",");
-    }
-    Serial.print("]");
-  }
-  Serial.println("]");
-  Serial.println("]");
-  Serial.println();
 }
 void check_pumps() {
   for (int i = 0; i < NUM_PUMPS; i++) {
@@ -142,35 +158,104 @@ void check_pumps() {
 void push_data() {
 }
 
-// - INTURRUPT PIN CALLBACKS
-void interrupt_push_enc1() {
+void doEncoderA() {
+  // look for a low-to-high on channel A
+  if (digitalRead(encoder0PinA) == HIGH) {
+
+    // check channel B to see which way encoder is turning
+    if (digitalRead(encoder0PinB) == LOW) {
+      //encoder0Pos = encoder0Pos + 1;         // CW
+    }
+    else {
+      encoder0Pos = encoder0Pos - 1;         // CCW
+    }
+  }
+
+  else   // must be a high-to-low edge on channel A
+  {
+    // check channel B to see which way encoder is turning
+    if (digitalRead(encoder0PinB) == HIGH) {
+      encoder0Pos = encoder0Pos + 1;          // CW
+    }
+    else {
+      //encoder0Pos = encoder0Pos - 1;          // CCW
+    }
+  }
 }
-void interrupt_push_enc2() {
+
+void doEncoderB() {
+  // look for a low-to-high on channel B
+  if (digitalRead(encoder0PinB) == HIGH) {
+
+    // check channel A to see which way encoder is turning
+    if (digitalRead(encoder0PinA) == HIGH) {
+      encoder0Pos = encoder0Pos + 1;         // CW
+    }
+    else {
+      //encoder0Pos = encoder0Pos - 1;         // CCW
+    }
+  }
+
+  // Look for a high-to-low on channel B
+
+  else {
+    // check channel B to see which way encoder is turning
+    if (digitalRead(encoder0PinA) == LOW) {
+      //encoder0Pos = encoder0Pos + 1;          // CW
+    }
+    else {
+      encoder0Pos = encoder0Pos - 1;          // CCW
+    }
+  }
 }
-void interrupt_turn_enc() {
-}
+
 
 // SETUP/LOOP STUFF
 void setup() {
   Serial.begin(115200);
-  delay(200);
+  delay(20);
   Serial.println(); // Clear junk on boot
+  Serial.println("Setup Start");
+  Serial.println();
+
   high_power_runner.init();
   low_power_runner.init();
   Serial.println("Initialized schedulers");
+
   low_power_runner.addTask(pump_thread);
   low_power_runner.addTask(data_push_thread);
   pump_thread.enable();
   data_push_thread.enable();
+
   high_power_runner.addTask(display_thread);
   display_thread.enable();
+
+  ui.setTargetFPS(30);
+  ui.setFrames(frames, frameCount);
+  ui.setOverlays(overlays, overlaysCount);
+  ui.disableAutoTransition();
+  ui.setTimePerTransition(200);
+  ui.init();
+  display.flipScreenVertically();
+
+  pinMode(encoder0PinA, INPUT);
+  pinMode(encoder0PinB, INPUT);
+  pinMode(encoder0PinP, INPUT);
+  attachInterrupt(0, doEncoderA, CHANGE);
+  attachInterrupt(1, doEncoderB, CHANGE);
+
+  delay(20);
+  Serial.println("Setup Complete");
 }
 void loop() {
   //Always run low power thread
   low_power_runner.execute();
   if (HIGH_POWER) {
     high_power_runner.execute();
+    int remainingTimeBudget = ui.update();
+    if (remainingTimeBudget > 0) {
+      delay(remainingTimeBudget);
+    }
   }
-
 }
 
