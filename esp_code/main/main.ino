@@ -1,9 +1,12 @@
-// User settable values
 #define encoder0PinA  0
 #define encoder0PinB  2
 #define encoder0PinP  15
 #define displayPinSDA 4
 #define displayPinSCL 5
+#define dispaly_is_bicolour true
+#define enable_serial_out true
+#define debug_mode true
+
 // The PUMP_PINS array defines pins to check, and also defines the number of pumps to keep track of.
 // Number of pumps is limited by the number of pins available on controller AND BY MEMORY.
 // Each additional pump needs an array of a full day to track it. Each uses 10.8 kbytes of ram.
@@ -11,13 +14,14 @@
 const int PUMP_PINS[] = {14, 16};
 const int PUMP_CHECK_INTERVAL = 1000; // In ms
 const int DATA_PUSH_INTERVAL = 500; // In seconds
-const int DISPLAY_INTERVAL = 100; //In ms
+const int DISPLAY_INTERVAL = 200; //In ms
 
+const String bodyText [] = {"Last 24 hours", "Last 7 days", "Last 30 days"};
 // Stuff for Pump Calculations
 #include <TaskScheduler.h>
 #include <TaskSchedulerDeclarations.h>
 #include <math.h>
-#include <StandardCplusplus.h>
+//#include <StandardCplusplus.h>
 #include <bitset>
 // Stuff for display
 #include "SSD1306.h" // alias for `#include "SSD1306Wire.h"`
@@ -36,8 +40,6 @@ const int NUM_PUMPS = (sizeof(PUMP_PINS) / sizeof(PUMP_PINS[0])); //C++ lame way
 const int SECONDS_IN_MINUTE = 60;
 const int MINUTES_IN_HOUR = 60;
 const int HOURS_IN_DAY = 24;
-const int DAYS_IN_WEEK = 7;
-const int DAYS_IN_MONTH = 30;
 
 const int SECONDS_IN_DAY = (SECONDS_IN_MINUTE * MINUTES_IN_HOUR * HOURS_IN_DAY);
 
@@ -64,41 +66,65 @@ Scheduler low_power_runner;
 
 bool HIGH_POWER = true;
 
-void alarmOverlay(OLEDDisplay *display, OLEDDisplayUiState* state) {
-  display->setTextAlignment(TEXT_ALIGN_RIGHT);
-  display->setFont(ArialMT_Plain_10);
-  display->drawString(128, 0, String(millis()));
+void pumpFrame0(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  pumpFrame_template(display, state, x, y, 0);
+}
+void pumpFrame1(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  pumpFrame_template(display, state, x, y, 1);
+}
+void pumpFrame2(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  pumpFrame_template(display, state, x, y, 2);
 }
 
-
-void pumpFrame(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
-  display->setFont(ArialMT_Plain_16);
-
+void pumpFrame_template(OLEDDisplay * display, OLEDDisplayUiState * state, int16_t x, int16_t y, int frame_type) {
+  int values[NUM_PUMPS];
+  for (int i = 0; i < NUM_PUMPS; i++) {
+    switch (frame_type) {
+      case 0:
+        values[i] = get_last_24_hours(i);
+        break;
+      case 1:
+        values[i] = get_last_n_days(7, i);
+        break;
+      case 2:
+        values[i] = get_last_n_days(30, i);
+        break;
+    }
+  }
   // The coordinates define the center of the text
   display->setTextAlignment(TEXT_ALIGN_CENTER);
-
-  display->drawString(64 - x, 18, String(get_last_24_hours(0)));
-  display->drawString(64 - x, 36, String(encoder0Pos));
-}
-
-void imageFrame(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
-  // Text alignment demo
+  display->drawVerticalLine(64 + x, 16 + y, 32);
   display->setFont(ArialMT_Plain_10);
-  display->setTextAlignment(TEXT_ALIGN_CENTER);
-  display->drawString(64 - x, 32, String(encoder0Pos)); // The coordinates define the center of the text
+  display->drawString(32 + x, 14 + y, "Main");
+  display->drawString(96 + x, 14 + y, "Backup");
+  display->setFont(ArialMT_Plain_16);
+  display->drawString(32 + x, 30 + y, String(values[0]));
+  display->drawString(96 + x, 30 + y, String(values[1]));
+  display->setFont(ArialMT_Plain_10);
+  display->drawString(64 + x, 52 + y, bodyText[frame_type]);
+
 }
 
-FrameCallback frames[] = { pumpFrame, pumpFrame, pumpFrame, pumpFrame, pumpFrame, pumpFrame, imageFrame };
-int frameCount = 7;
+void frame_counter(OLEDDisplay *display, OLEDDisplayUiState* state) {
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->setFont(ArialMT_Plain_10);
+  display->drawString(0, 0, String(state->currentFrame));
+}
 
-OverlayCallback overlays[] = { alarmOverlay };
-int overlaysCount = 1;
+void alarmOverlay(OLEDDisplay *display, OLEDDisplayUiState* state) {
+
+}
+
+FrameCallback frames[] = {pumpFrame0, pumpFrame1, pumpFrame2};
+int frameCount = 3;
+
+OverlayCallback overlays[] = { alarmOverlay, frame_counter };
+int overlaysCount = 2;
 
 
 
 bool check_physical_pump(int pump_number) {
   return digitalRead(PUMP_PINS[pump_number]);
-  //return (int)random(2); //TODO: check actual pin
 }
 
 int get_last_n_days(int n, int pump_number) { // This whole bit I THINK is right... stupid arrays
@@ -125,12 +151,29 @@ int get_last_24_hours(int pump_number) {
 
 // - CALLBACKS FOR SCHEDULED TASKS
 void update_displays() {
-  int desired_frame = encoder0Pos % 7; //TODO: Set this 7 to the number of frames you lazy cunt
-  OLEDDisplayUiState * current_state = ui.getUiState();
-  if (current_state->currentFrame != desired_frame && current_state->frameState == FIXED) {
-    ui.transitionToFrame(desired_frame);
+  int values[NUM_PUMPS];
+  for (int j = 0; j < 3; j++) {
+    for (int i = 0; i < NUM_PUMPS; i++) {
+      switch (j) {
+        case 0:
+          values[i] = get_last_24_hours(i);
+          break;
+        case 1:
+          values[i]=get_last_n_days(7,i);
+          break;
+        case 2:
+          values[i]=get_last_n_days(30,i);
+          break;
+      }
+    }
+  //Serial.println(bodyText[j]);
+  //Serial.print("0: ");
+  //Serial.println(String(values[0]));
+  //Serial.print("1: ");
+  //Serial.println(String(values[1]));
   }
-
+  //Serial.println();
+  //Serial.println();
 }
 void check_pumps() {
   for (int i = 0; i < NUM_PUMPS; i++) {
@@ -157,7 +200,7 @@ void check_pumps() {
 }
 void push_data() {
 }
-
+/* --- Start inturupts section --- */
 void doEncoderA() {
   // look for a low-to-high on channel A
   if (digitalRead(encoder0PinA) == HIGH) {
@@ -209,6 +252,7 @@ void doEncoderB() {
   }
 }
 
+/* --- End inturupts section --- */
 
 // SETUP/LOOP STUFF
 void setup() {
@@ -230,11 +274,14 @@ void setup() {
   high_power_runner.addTask(display_thread);
   display_thread.enable();
 
-  ui.setTargetFPS(30);
+  //ui.setTargetFPS(50);
   ui.setFrames(frames, frameCount);
   ui.setOverlays(overlays, overlaysCount);
   ui.disableAutoTransition();
-  ui.setTimePerTransition(200);
+  //ui.setTimePerTransition(100);
+  ui.setFrameAnimation(SLIDE_UP);
+  ui.setIndicatorPosition(RIGHT);
+
   ui.init();
   display.flipScreenVertically();
 
@@ -247,14 +294,25 @@ void setup() {
   delay(20);
   Serial.println("Setup Complete");
 }
+void changeFrame() {
+  int desired_frame = encoder0Pos % frameCount;
+  OLEDDisplayUiState * current_state = ui.getUiState();
+  if (current_state->currentFrame != desired_frame && current_state->frameState == FIXED) {
+    //ui.switchToFrame(desired_frame);
+    ui.transitionToFrame(desired_frame);
+
+  }
+}
 void loop() {
   //Always run low power thread
   low_power_runner.execute();
   if (HIGH_POWER) {
+    // Run high power stuff.
     high_power_runner.execute();
+    changeFrame();
     int remainingTimeBudget = ui.update();
     if (remainingTimeBudget > 0) {
-      delay(remainingTimeBudget);
+      delay(remainingTimeBudget);//TODO: Delay this count for frame, or the next time we need to run a task. Figure that out
     }
   }
 }
